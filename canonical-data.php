@@ -388,6 +388,8 @@ function hillen_seed_filter_definitions($filter_defs_table) {
         ['wheel', 'bearing_part_number', 'Bearing Part Number', 'text', 80],
         ['wheel', 'has_bearings', 'Has Bearings', 'boolean', 90],
         ['wheel', 'preassembled', 'Preassembled', 'boolean', 100],
+        ['wheel', 'free_shipping_threshold', 'Free Shipping Threshold', 'number', 110],
+        ['wheel', 'free_shipping_qty_breakpoint', 'Free Shipping Quantity Breakpoint', 'number', 120],
         ['tire', 'compound', 'Compound', 'text', 10],
         ['tire', 'tread_treatment', 'Tread Treatment', 'text', 20],
         ['tire', 'outside_diameter', 'Outside Diameter', 'number', 30],

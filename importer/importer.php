@@ -1107,6 +1107,7 @@ function hillen_build_millennium_filter_lookup($xlsx_path) {
         $bearing = hillen_cell($row, $idx['bearing'] ?? -1);
         $size_parts = hillen_parse_wheel_size($size);
 
+        $is_assembled = stripos($wheel_type, 'assembled') !== false;
         $entry = [
             'mfr_part_number' => $mfr_part,
             'millennium_part_number' => hillen_cell($row, $idx['millennium_part'] ?? -1),
@@ -1118,11 +1119,12 @@ function hillen_build_millennium_filter_lookup($xlsx_path) {
             'inside_diameter' => $size_parts['bore'],
             'wheel_type' => $wheel_type,
             'bearing_part_number' => $bearing,
-            'has_bearings' => $bearing !== '' ? 'Yes' : 'No',
-            'preassembled' => stripos($wheel_type, 'assembled') !== false ? 'Yes' : 'No',
+            'has_bearings' => $is_assembled && $bearing !== '' ? 'Yes' : 'No',
+            'preassembled' => $is_assembled ? 'Yes' : 'No',
+            'assembly_state' => $is_assembled ? 'assembled' : 'wheel_only',
         ];
 
-        foreach (hillen_millennium_sku_lookup_keys($mfr_part, $compound) as $key) {
+        foreach (hillen_millennium_sku_lookup_keys($mfr_part, $compound, $entry['assembly_state']) as $key) {
             $lookup[$key] = $entry;
         }
     }
@@ -1130,23 +1132,61 @@ function hillen_build_millennium_filter_lookup($xlsx_path) {
     return $lookup;
 }
 
-function hillen_millennium_sku_lookup_keys($mfr_part, $compound) {
+function hillen_millennium_sku_lookup_keys($mfr_part, $compound, $assembly_state = null) {
     $compound = trim((string) $compound);
-    $keys = [
+    $base_keys = [
         hillen_normalize_sku($mfr_part . '-' . $compound),
         hillen_normalize_sku($mfr_part . $compound),
     ];
 
-    return array_unique(array_filter($keys));
+    if (!$assembly_state) {
+        return array_unique(array_filter($base_keys));
+    }
+
+    return array_map(
+        fn($key) => $key . '|' . $assembly_state,
+        array_unique(array_filter($base_keys))
+    );
 }
 
 function hillen_lookup_millennium_filter_row($sku, $lookup) {
+    $compound = hillen_extract_compound($sku);
+    $base_sku = hillen_base_wheel_sku_without_assembly($sku);
+    $assembly_state = hillen_sku_is_assembled_wheel($sku) ? 'assembled' : 'wheel_only';
+
+    $candidates = [];
+    if ($compound && $base_sku) {
+        foreach (hillen_millennium_sku_lookup_keys($base_sku, $compound, $assembly_state) as $key) {
+            $candidates[] = $key;
+        }
+    }
+
     $sku_norm = hillen_normalize_sku($sku);
-    if (isset($lookup[$sku_norm])) {
-        return $lookup[$sku_norm];
+    $candidates[] = $sku_norm . '|' . $assembly_state;
+    $candidates[] = $sku_norm;
+
+    foreach (array_unique(array_filter($candidates)) as $candidate) {
+        if (isset($lookup[$candidate])) {
+            return $lookup[$candidate];
+        }
     }
 
     return null;
+}
+
+function hillen_base_wheel_sku_without_assembly($sku) {
+    $sku = trim((string) $sku);
+    $sku = preg_replace('/(?:-)?(?:FALCONIUM|HYLOAD|HL3|HL4|XD59)$/i', '', $sku);
+    $sku = preg_replace('/A$/i', '', $sku);
+
+    return trim($sku, '- ');
+}
+
+function hillen_sku_is_assembled_wheel($sku) {
+    $base = trim((string) $sku);
+    $base = preg_replace('/(?:-)?(?:FALCONIUM|HYLOAD|HL3|HL4|XD59)$/i', '', $base);
+
+    return (bool) preg_match('/A$/i', $base);
 }
 
 function hillen_detect_filter_product_type($record) {
@@ -1212,9 +1252,20 @@ function hillen_extract_product_filters($record, $product_type, $millennium = nu
 
     if ($product_type === 'wheel') {
         $bearing = $millennium['bearing_part_number'] ?? hillen_extract_bearing_part_number($description);
+        $assembled_by_sku = hillen_sku_is_assembled_wheel($sku);
+        $has_bearings = $assembled_by_sku || ($millennium && ($millennium['has_bearings'] ?? 'No') === 'Yes') || (bool) $bearing;
+
         hillen_add_filter($filters, 'bearing_part_number', $bearing, null, $millennium ? 'millennium' : 'parsed', 'parsed', $description);
-        hillen_add_filter($filters, 'has_bearings', $millennium['has_bearings'] ?? ($bearing ? 'Yes' : 'No'), null, $millennium ? 'millennium' : 'parsed', 'parsed', $description);
-        hillen_add_filter($filters, 'preassembled', $millennium['preassembled'] ?? ($bearing ? 'Yes' : 'No'), null, $millennium ? 'millennium' : 'parsed', 'parsed', $description);
+        hillen_add_filter($filters, 'has_bearings', $has_bearings ? 'Yes' : 'No', null, $millennium ? 'millennium' : 'parsed', 'parsed', $description);
+        hillen_add_filter($filters, 'preassembled', $assembled_by_sku ? 'Yes' : 'No', null, $assembled_by_sku ? 'sku_rule' : 'parsed', 'parsed', $sku);
+
+        $threshold = 1500;
+        $wheel_price = hillen_filter_price_for_breakpoint($record);
+        hillen_add_filter($filters, 'free_shipping_threshold', (string) $threshold, $threshold, 'business_rule', 'exact', 'Millennium free freight at $1500');
+        if ($wheel_price > 0) {
+            $breakpoint = (int) ceil($threshold / $wheel_price);
+            hillen_add_filter($filters, 'free_shipping_qty_breakpoint', (string) $breakpoint, $breakpoint, 'calculated', 'calculated', 'ceil(1500 / wheel price)');
+        }
     }
 
     if ($product_type === 'tire') {
@@ -1223,6 +1274,17 @@ function hillen_extract_product_filters($record, $product_type, $millennium = nu
     }
 
     return $filters;
+}
+
+function hillen_filter_price_for_breakpoint($record) {
+    foreach (['List Price', 'Coded Price', 'Price (Cost)'] as $field) {
+        $value = preg_replace('/[^0-9.]/', '', (string) ($record[$field] ?? ''));
+        if ($value !== '' && is_numeric($value) && (float) $value > 0) {
+            return (float) $value;
+        }
+    }
+
+    return 0.0;
 }
 
 function hillen_add_filter(&$filters, $key, $value, $numeric = null, $source = 'parsed', $confidence = 'parsed', $raw = null) {
@@ -1290,6 +1352,12 @@ function hillen_extract_compound($text) {
 
     foreach ($compounds as $needle => $label) {
         if (preg_match('/(?<![A-Z0-9])' . preg_quote($needle, '/') . '(?![A-Z0-9])/', $text)) {
+            return $label;
+        }
+    }
+
+    foreach ($compounds as $needle => $label) {
+        if (preg_match('/' . preg_quote($needle, '/') . '$/', $text)) {
             return $label;
         }
     }
@@ -3106,6 +3174,8 @@ function hillen_export_master_dataset_with_filters() {
         'Filter Bearing Part Number',
         'Filter Has Bearings',
         'Filter Preassembled',
+        'Filter Free Shipping Threshold',
+        'Filter Free Shipping Qty Breakpoint',
     ];
 
     fputcsv($output, array_merge($headers, $filter_headers));
@@ -3128,6 +3198,8 @@ function hillen_export_master_dataset_with_filters() {
             hillen_join_filter_export_values($filters['bearing_part_number'] ?? []),
             hillen_join_filter_export_values($filters['has_bearings'] ?? []),
             hillen_join_filter_export_values($filters['preassembled'] ?? []),
+            hillen_join_filter_export_values($filters['free_shipping_threshold'] ?? []),
+            hillen_join_filter_export_values($filters['free_shipping_qty_breakpoint'] ?? []),
         ];
 
         fputcsv($output, array_merge($row, $extra));
