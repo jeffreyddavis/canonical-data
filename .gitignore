@@ -1,0 +1,12 @@
+.DS_Store
+Thumbs.db
+*.log
+*.tmp
+*.bak
+master_parts_export_with_filters*.csv
+canonical-dataALT/
+node_modules/
+vendor/
+.env
+.env.*
+!.env.example
