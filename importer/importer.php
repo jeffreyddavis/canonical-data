@@ -3205,9 +3205,104 @@ function hillen_export_master_dataset_with_filters() {
         fputcsv($output, array_merge($row, $extra));
     }
 
+    $variantRowsWritten = hillen_append_millennium_tire_variant_rows($output, $headers, $filter_headers);
+
     fclose($input);
     fclose($output);
     exit;
+}
+
+function hillen_append_millennium_tire_variant_rows($output, $master_headers, $filter_headers) {
+    $path = WP_PLUGIN_DIR . '/canonical-data/millennium_tire_variants.csv';
+    if (!file_exists($path)) {
+        return 0;
+    }
+
+    $input = fopen($path, 'r');
+    if (!$input) {
+        return 0;
+    }
+
+    $variant_headers = fgetcsv($input);
+    if (!$variant_headers) {
+        fclose($input);
+        return 0;
+    }
+
+    $count = 0;
+    while (($variant_row = fgetcsv($input)) !== false) {
+        $variant = [];
+        foreach ($variant_headers as $i => $header) {
+            $variant[$header] = trim((string) ($variant_row[$i] ?? ''));
+        }
+
+        $base = hillen_build_master_row_from_tire_variant($variant, $master_headers);
+        $filters = hillen_build_filter_row_from_tire_variant($variant, $filter_headers);
+
+        fputcsv($output, array_merge($base, $filters));
+        $count++;
+    }
+
+    fclose($input);
+
+    return $count;
+}
+
+function hillen_build_master_row_from_tire_variant($variant, $master_headers) {
+    $row = array_fill_keys($master_headers, '');
+
+    $compound = $variant['compound'] ?? '';
+    $tread = $variant['tread_treatment'] ?? '';
+    $title = trim((string) ($variant['product_title'] ?? ''));
+    $size = trim((string) ($variant['size'] ?? ''));
+    $millenniumPart = trim((string) ($variant['millennium_part_number'] ?? ''));
+    $variantSku = trim((string) ($variant['variant_sku'] ?? ''));
+    $manufacturerParts = trim((string) ($variant['manufacturer_part_numbers'] ?? ''));
+    $otherParts = trim((string) ($variant['other_part_numbers'] ?? ''));
+
+    $description = trim(implode(' ', array_filter([
+        'TIRE',
+        $size ? preg_replace('/\s*\([^)]*\)/', '', $size) : null,
+        $compound,
+        $tread,
+        $millenniumPart,
+    ])));
+
+    $row['SKU/Part Number'] = $variantSku ?: $millenniumPart;
+    $row['Coded Part Number'] = $variantSku;
+    $row['Description'] = strtoupper($description ?: $title);
+    $row['Category 5'] = 'WHEELS AND TIRES';
+    $row['Category 4'] = 'TIRES';
+    $row['Category 3'] = 'MILLENNIUM WEBSITE VARIANT';
+    $row['Category 2'] = 'TIRES';
+    $row['Category 1'] = 'MILLENNIUM';
+    $row['List Price'] = $variant['price'] ?? '';
+    $row['Price (Cost)'] = '';
+    $row['Coded Price'] = '';
+    $row['Models'] = trim(implode(' | ', array_filter([
+        $manufacturerParts ? 'MFR: ' . $manufacturerParts : null,
+        $otherParts ? 'OTHER: ' . $otherParts : null,
+        $variant['product_url'] ?? null,
+    ])));
+    $row['CURRENTLY ON WEBSITE Y/N'] = 'Y';
+
+    return array_values(array_intersect_key($row, array_flip($master_headers)));
+}
+
+function hillen_build_filter_row_from_tire_variant($variant, $filter_headers) {
+    $filters = array_fill_keys($filter_headers, '');
+
+    $filters['Filter Product Type'] = 'tire';
+    $filters['Filter Compound'] = $variant['compound'] ?? '';
+    $filters['Filter Tread Treatment'] = $variant['tread_treatment'] ?? '';
+    $filters['Filter Size'] = $variant['size'] ?? '';
+    $filters['Filter Outside Diameter'] = $variant['outside_diameter'] ?? '';
+    $filters['Filter Tread Width'] = $variant['tread_width'] ?? '';
+    $filters['Filter Inside Diameter'] = $variant['inside_diameter'] ?? '';
+    $filters['Filter Manufacturer Part Number'] = $variant['manufacturer_part_numbers'] ?? '';
+    $filters['Filter Manufacturer'] = 'MILLENNIUM';
+
+    return array_values(array_intersect_key($filters, array_flip($filter_headers)));
 }
 
 function hillen_join_filter_export_values($values) {
